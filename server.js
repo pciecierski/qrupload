@@ -99,10 +99,11 @@ app.post("/links/clear", async (req, res) => {
 app.get("/u/:linkId", ensureLinkExists, async (req, res) => {
   const { linkId } = req.params;
   const uploaded = req.query.uploaded === "1";
+  const cleared = req.query.cleared === "1";
   const photos = await storage.getPhotos(linkId);
   const linkData = await storage.getLinkById(linkId);
   const publicUrl = `${getPublicBaseUrl(req)}/u/${linkId}`;
-  res.send(renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, null));
+  res.send(renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared, null));
 });
 
 app.post("/u/:linkId/upload", ensureLinkExists, async (req, res) => {
@@ -114,8 +115,13 @@ app.post("/u/:linkId/upload", ensureLinkExists, async (req, res) => {
     const photos = await storage.getPhotos(req.params.linkId);
     const linkData = await storage.getLinkById(req.params.linkId);
     const publicUrl = `${getPublicBaseUrl(req)}/u/${req.params.linkId}`;
-    return res.status(400).send(renderUploadPage(publicUrl, req.params.linkId, linkData, photos, false, err.message));
+    return res.status(400).send(renderUploadPage(publicUrl, req.params.linkId, linkData, photos, false, false, err.message));
   }
+});
+
+app.post("/u/:linkId/photos/clear", ensureLinkExists, async (req, res) => {
+  await storage.clearPhotosForLink(req.params.linkId);
+  res.redirect(`/u/${req.params.linkId}?cleared=1`);
 });
 
 app.get("/photo/:photoId", async (req, res) => {
@@ -258,6 +264,25 @@ function createFileStorage() {
         }
       }
       writeState({ links: [], photos: [] });
+    },
+    async clearPhotosForLink(linkId) {
+      const state = readState();
+      const keptPhotos = [];
+      for (const photo of state.photos) {
+        if (photo.linkId !== linkId) {
+          keptPhotos.push(photo);
+          continue;
+        }
+        if (photo.filePath && fs.existsSync(photo.filePath)) {
+          try {
+            fs.unlinkSync(photo.filePath);
+          } catch {
+            // Ignore file deletion errors and continue cleanup.
+          }
+        }
+      }
+      state.photos = keptPhotos;
+      writeState(state);
     }
   };
 }
@@ -359,6 +384,9 @@ function createPostgresStorage(databaseUrl) {
     async clearAll() {
       await pool.query(`DELETE FROM photos`);
       await pool.query(`DELETE FROM links`);
+    },
+    async clearPhotosForLink(linkId) {
+      await pool.query(`DELETE FROM photos WHERE link_id = $1`, [linkId]);
     }
   };
 }
@@ -513,7 +541,7 @@ function renderHomePage(createdLinks) {
 </html>`;
 }
 
-function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, errorMessage) {
+function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared, errorMessage) {
   const photoList = photos.length
     ? photos
         .map(
@@ -548,6 +576,7 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, errorMe
       <p class="hint">Open this link on a phone and use the camera button below.</p>
 
       ${uploaded ? '<p class="ok">Upload successful.</p>' : ""}
+      ${cleared ? '<p class="ok">All uploaded photos for this link were deleted.</p>' : ""}
       ${errorMessage ? `<p class="error">${escapeHtml(errorMessage)}</p>` : ""}
 
       <form method="post" action="/u/${encodeURIComponent(linkId)}/upload" enctype="multipart/form-data">
@@ -557,6 +586,15 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, errorMe
       </form>
 
       <h2>Uploaded Photos</h2>
+      <form method="post" action="/u/${encodeURIComponent(linkId)}/photos/clear" class="danger-zone">
+        <button
+          type="submit"
+          class="danger-button"
+          onclick="return window.confirm('Delete all uploaded photos for this link?')"
+        >
+          Delete photos
+        </button>
+      </form>
       <ul class="photo-grid">
         ${photoList}
       </ul>
