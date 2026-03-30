@@ -152,7 +152,7 @@ async function start() {
 function createStorage() {
   const databaseUrl = process.env.DATABASE_URL;
   if (databaseUrl) {
-    return createPostgresStorage(databaseUrl);
+    return createPostgresStorage(normalizeDatabaseUrl(databaseUrl));
   }
   return createFileStorage();
 }
@@ -632,4 +632,21 @@ function getPublicBaseUrl(req) {
 function normalizeSourceDocumentNumber(value) {
   if (typeof value !== "string") return "";
   return value.trim().slice(0, 120);
+}
+
+function normalizeDatabaseUrl(rawUrl) {
+  if (typeof rawUrl !== "string") {
+    return "";
+  }
+
+  const trimmed = rawUrl.trim();
+  if (trimmed.startsWith("railwaypostgresql://")) {
+    return `postgresql://${trimmed.slice("railwaypostgresql://".length)}`;
+  }
+
+  if (trimmed.startsWith("railway://")) {
+    return `postgresql://${trimmed.slice("railway://".length)}`;
+  }
+
+  return trimmed;
 }
