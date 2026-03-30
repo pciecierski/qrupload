@@ -1,0 +1,18 @@
+{
+  "name": "qrupload",
+  "version": "1.0.0",
+  "description": "QRupload web app for unique mobile photo upload links",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "latest",
+    "multer": "latest",
+    "pg": "^8.20.0"
+  }
+}

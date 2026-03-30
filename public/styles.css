@@ -1,0 +1,269 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f5f7fb;
+  color: #1f2937;
+}
+
+.container {
+  max-width: 760px;
+  margin: 24px auto;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+h1,
+h2 {
+  margin-top: 0;
+}
+
+form {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 20px;
+}
+
+input[type="file"] {
+  padding: 8px;
+  border: 1px dashed #9ca3af;
+  border-radius: 8px;
+}
+
+#photos {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+button {
+  width: fit-content;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-weight: 600;
+  color: #fff;
+  background: #2563eb;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1d4ed8;
+}
+
+.hint {
+  color: #4b5563;
+}
+
+.link-label {
+  margin-bottom: 2px;
+  font-weight: 600;
+}
+
+.ok {
+  color: #166534;
+}
+
+.error {
+  color: #b91c1c;
+}
+
+.photo-grid {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.link-grid {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.link-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+
+.link-card-label {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.source-doc {
+  margin: 0 0 8px;
+  color: #111827;
+}
+
+.link-status {
+  margin: 0 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #374151;
+}
+
+.status-icon {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-icon.used {
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.15);
+}
+
+.status-icon.unused {
+  background: #9ca3af;
+  box-shadow: 0 0 0 3px rgba(156, 163, 175, 0.2);
+}
+
+.link-card img {
+  margin-top: 8px;
+  width: 180px;
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  display: block;
+}
+
+.qr-button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+.qr-button img {
+  margin-top: 0;
+}
+
+.qr-dialog {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.qr-dialog::backdrop {
+  backdrop-filter: blur(8px);
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.qr-dialog-content {
+  position: relative;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+#dialogQrImage {
+  width: min(420px, 75vw);
+  height: auto;
+  display: block;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+}
+
+.close-dialog {
+  margin-left: auto;
+  margin-bottom: 10px;
+  display: block;
+}
+
+.dialog-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+}
+
+#sourceDocumentPromptInput {
+  margin-top: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 16px;
+}
+
+.open-photo-button {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-weight: 600;
+  color: #fff;
+  background: #2563eb;
+  cursor: pointer;
+}
+
+.open-photo-button:hover {
+  background: #1d4ed8;
+}
+
+.photo-dialog {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.photo-dialog::backdrop {
+  backdrop-filter: blur(8px);
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.photo-dialog-content {
+  position: relative;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+#dialogPhotoImage {
+  width: min(85vw, 960px);
+  max-height: 80vh;
+  object-fit: contain;
+  display: block;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+}
+
+.photo-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 8px;
+  background: #fff;
+}
+
+.photo-item img {
+  width: 100%;
+  height: 160px;
+  object-fit: cover;
+  border-radius: 8px;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.empty {
+  color: #6b7280;
+}
