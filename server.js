@@ -91,6 +91,11 @@ app.post("/links", async (req, res) => {
   res.redirect(`/u/${linkId}`);
 });
 
+app.post("/links/clear", async (req, res) => {
+  await storage.clearAll();
+  res.redirect("/");
+});
+
 app.get("/u/:linkId", ensureLinkExists, async (req, res) => {
   const { linkId } = req.params;
   const uploaded = req.query.uploaded === "1";
@@ -240,6 +245,19 @@ function createFileStorage() {
         contentType: photo.contentType || "image/jpeg",
         filePath: photo.filePath
       };
+    },
+    async clearAll() {
+      const state = readState();
+      for (const photo of state.photos) {
+        if (photo.filePath && fs.existsSync(photo.filePath)) {
+          try {
+            fs.unlinkSync(photo.filePath);
+          } catch {
+            // Ignore file deletion errors and continue cleanup.
+          }
+        }
+      }
+      writeState({ links: [], photos: [] });
     }
   };
 }
@@ -337,6 +355,10 @@ function createPostgresStorage(databaseUrl) {
       );
       if (!result.rowCount) return null;
       return result.rows[0];
+    },
+    async clearAll() {
+      await pool.query(`DELETE FROM photos`);
+      await pool.query(`DELETE FROM links`);
     }
   };
 }
@@ -394,6 +416,15 @@ function renderHomePage(createdLinks) {
       <ul class="link-grid">
         ${linkList}
       </ul>
+      <form method="post" action="/links/clear" class="danger-zone">
+        <button
+          type="submit"
+          class="danger-button"
+          onclick="return window.confirm('Delete all created links and uploaded photos?')"
+        >
+          Delete all created links
+        </button>
+      </form>
     </main>
     <dialog id="qrDialog" class="qr-dialog">
       <div class="qr-dialog-content">
@@ -538,23 +569,9 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, errorMe
       const closePhotoDialog = document.getElementById("closePhotoDialog");
       const openPhotoButtons = document.querySelectorAll(".open-photo-button");
 
-      async function requestCameraAccess() {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          return;
-        }
-
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        stream.getTracks().forEach((track) => track.stop());
-      }
-
-      cameraButton.addEventListener("click", async () => {
-        try {
-          await requestCameraAccess();
-        } catch (error) {
-          // If camera permission is denied or unsupported, still show the picker fallback.
-        } finally {
-          fileInput.click();
-        }
+      cameraButton.addEventListener("click", () => {
+        // iOS Safari requires direct user gesture to open camera/file chooser.
+        fileInput.click();
       });
 
       openPhotoButtons.forEach((button) => {

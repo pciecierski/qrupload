@@ -138,6 +138,20 @@ button:hover {
   box-shadow: 0 0 0 3px rgba(156, 163, 175, 0.2);
 }
 
+.danger-zone {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.danger-button {
+  background: #b91c1c;
+}
+
+.danger-button:hover {
+  background: #991b1b;
+}
+
 .link-card img {
   margin-top: 8px;
   width: 180px;
