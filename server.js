@@ -546,7 +546,7 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, errorMe
       <form method="post" action="/u/${encodeURIComponent(linkId)}/upload" enctype="multipart/form-data">
         <input id="photos" name="photos" type="file" accept="image/*" capture="environment" multiple required />
         <button id="cameraButton" type="button">Make a photo</button>
-        <button type="submit">Upload</button>
+        <button id="uploadButton" class="upload-button" type="submit" disabled>Upload</button>
       </form>
 
       <h2>Uploaded Photos</h2>
@@ -563,16 +563,39 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, errorMe
     <script>
       const fileInput = document.getElementById("photos");
       const cameraButton = document.getElementById("cameraButton");
+      const uploadButton = document.getElementById("uploadButton");
       const photoDialog = document.getElementById("photoDialog");
       const photoDialogContent = photoDialog.querySelector(".photo-dialog-content");
       const dialogPhotoImage = document.getElementById("dialogPhotoImage");
       const closePhotoDialog = document.getElementById("closePhotoDialog");
       const openPhotoButtons = document.querySelectorAll(".open-photo-button");
 
+      function syncUploadState() {
+        const hasSelectedPhoto = fileInput.files && fileInput.files.length > 0;
+        cameraButton.disabled = hasSelectedPhoto;
+        uploadButton.disabled = !hasSelectedPhoto;
+        uploadButton.classList.toggle("ready", hasSelectedPhoto);
+      }
+
+      syncUploadState();
+
       cameraButton.addEventListener("click", () => {
         // iOS Safari requires direct user gesture to open camera/file chooser.
         fileInput.click();
       });
+
+      fileInput.addEventListener("change", () => {
+        syncUploadState();
+      });
+
+      const uploadForm = fileInput.closest("form");
+      if (uploadForm) {
+        uploadForm.addEventListener("submit", () => {
+          // Prevent duplicate taps while upload is in progress.
+          cameraButton.disabled = true;
+          uploadButton.disabled = true;
+        });
+      }
 
       openPhotoButtons.forEach((button) => {
         button.addEventListener("click", () => {

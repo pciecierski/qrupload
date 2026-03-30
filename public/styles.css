@@ -61,6 +61,23 @@ button:hover {
   background: #1d4ed8;
 }
 
+button:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+button:disabled:hover {
+  background: #9ca3af;
+}
+
+.upload-button.ready {
+  background: #16a34a;
+}
+
+.upload-button.ready:hover {
+  background: #15803d;
+}
+
 .hint {
   color: #4b5563;
 }
