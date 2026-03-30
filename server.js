@@ -406,7 +406,10 @@ function renderHomePage(createdLinks) {
   </head>
   <body>
     <main class="container">
-      <h1>QRupload</h1>
+      <header class="title-row">
+        <h1>QRupload</h1>
+        <img src="/dclog-logo.png" alt="dclog.pl logo" class="app-logo" />
+      </header>
       <p>Create a unique link and share it with a phone to upload photos.</p>
       <form method="post" action="/links">
         <input id="sourceDocumentNumber" name="sourceDocumentNumber" type="hidden" />
@@ -426,6 +429,7 @@ function renderHomePage(createdLinks) {
         </button>
       </form>
     </main>
+    <footer class="app-footer">Product preview, Designed by dclog.pl</footer>
     <dialog id="qrDialog" class="qr-dialog">
       <div class="qr-dialog-content">
         <button id="closeQrDialog" class="close-dialog" type="button" aria-label="Close QR code dialog">Close</button>
@@ -531,7 +535,10 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, errorMe
   </head>
   <body>
     <main class="container">
-      <h1>Upload Photos</h1>
+      <header class="title-row">
+        <h1>Upload Photos</h1>
+        <img src="/dclog-logo.png" alt="dclog.pl logo" class="app-logo" />
+      </header>
       <p class="source-doc">
         <strong>Source document:</strong> ${escapeHtml((linkData && linkData.sourceDocumentNumber) || "Not provided")}
       </p>
@@ -554,6 +561,7 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, errorMe
         ${photoList}
       </ul>
     </main>
+    <footer class="app-footer">Product preview, Designed by dclog.pl</footer>
     <dialog id="photoDialog" class="photo-dialog">
       <div class="photo-dialog-content">
         <button id="closePhotoDialog" class="close-dialog" type="button" aria-label="Close full size image">Close</button>
@@ -631,10 +639,14 @@ function renderNotFoundPage() {
   </head>
   <body>
     <main class="container">
-      <h1>Link not found</h1>
+      <header class="title-row">
+        <h1>Link not found</h1>
+        <img src="/dclog-logo.png" alt="dclog.pl logo" class="app-logo" />
+      </header>
       <p>This upload link does not exist or has expired.</p>
       <a href="/">Create a new upload link</a>
     </main>
+    <footer class="app-footer">Product preview, Designed by dclog.pl</footer>
   </body>
 </html>`;
 }

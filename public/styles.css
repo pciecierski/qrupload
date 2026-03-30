@@ -9,6 +9,32 @@ body {
   color: #1f2937;
 }
 
+.title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.title-row h1 {
+  margin: 0;
+}
+
+.app-logo {
+  width: 92px;
+  max-width: 35%;
+  height: auto;
+  display: block;
+}
+
+.app-footer {
+  text-align: center;
+  color: #4b5563;
+  font-size: 13px;
+  margin: 4px 0 24px;
+}
+
 .container {
   max-width: 760px;
   margin: 24px auto;
