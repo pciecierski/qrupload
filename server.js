@@ -17,6 +17,7 @@ const storage = createStorage();
 
 app.use("/uploads", express.static(uploadsRoot));
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 function createLinkId() {
@@ -89,6 +90,13 @@ app.post("/links", async (req, res) => {
   const sourceDocumentNumber = normalizeSourceDocumentNumber(req.body.sourceDocumentNumber);
   await storage.createLink(linkId, sourceDocumentNumber);
   res.redirect(`/u/${linkId}`);
+});
+
+app.post("/api/links", async (req, res) => {
+  const linkId = createLinkId();
+  const sourceDocumentNumber = normalizeSourceDocumentNumber(req.body && req.body.sourceDocumentNumber);
+  await storage.createLink(linkId, sourceDocumentNumber);
+  return res.status(201).json(buildApiLinkResponse(req, linkId, sourceDocumentNumber));
 });
 
 app.post("/links/clear", async (req, res) => {
@@ -705,6 +713,18 @@ function getPublicBaseUrl(req) {
 function normalizeSourceDocumentNumber(value) {
   if (typeof value !== "string") return "";
   return value.trim().slice(0, 120);
+}
+
+function buildApiLinkResponse(req, linkId, sourceDocumentNumber) {
+  const uploadPath = `/u/${linkId}`;
+  const uploadUrl = `${getPublicBaseUrl(req)}${uploadPath}`;
+  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=420x420&data=${encodeURIComponent(uploadUrl)}`;
+  return {
+    id: linkId,
+    uploadUrl,
+    qrCodeUrl,
+    sourceDocumentNumber
+  };
 }
 
 function normalizeDatabaseUrl(rawUrl) {

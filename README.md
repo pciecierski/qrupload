@@ -49,6 +49,27 @@ If `DATABASE_URL` is not set, the app uses local storage:
 - `data.json` for links + photo metadata
 - `uploads/` for image files
 
+## REST API
+
+Create an upload link for integration with another app:
+
+```bash
+curl -X POST http://localhost:3000/api/links \
+  -H "Content-Type: application/json" \
+  -d "{\"sourceDocumentNumber\":\"DOC-2026-001\"}"
+```
+
+Example response:
+
+```json
+{
+  "id": "f3f5a1a2c9",
+  "uploadUrl": "http://localhost:3000/u/f3f5a1a2c9",
+  "qrCodeUrl": "https://api.qrserver.com/v1/create-qr-code/?size=420x420&data=http%3A%2F%2Flocalhost%3A3000%2Fu%2Ff3f5a1a2c9",
+  "sourceDocumentNumber": "DOC-2026-001"
+}
+```
+
 ## Railway deployment
 
 1. Push this folder to a GitHub repo.
