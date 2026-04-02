@@ -542,16 +542,16 @@ function renderHomePage(createdLinks) {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>QRupload</title>
+    <title>Tworzenie Linków i QR do dokumentów</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="container">
       <header class="title-row">
-        <h1>QRupload</h1>
+        <h1>Tworzenie Linków i QR do dokumentów</h1>
         <img src="/dclog-logo.png" alt="dclog.pl logo" class="app-logo" />
       </header>
-      <p>Create a unique link and share it with a phone to upload photos.</p>
+      <p>Za pomocą tego rozwiązania możesz tworzyć pojedyncze linki w postaci kodów QR które pozwolą sprawnie przesyłać np. zdjęcia i/lub dokumentację z poziomu dowolnego smartfona</p>
       <form method="post" action="/links">
         <input id="sourceDocumentNumber" name="sourceDocumentNumber" type="hidden" />
         <button id="openCreateLinkDialog" type="button">Create Upload Link</button>
@@ -673,13 +673,13 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Upload Photos</title>
+    <title>Obsługa dokumentu</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="container">
       <header class="title-row">
-        <h1>Upload Photos</h1>
+        <h1>Obsługa dokumentu</h1>
         <img src="/dclog-logo.png" alt="dclog.pl logo" class="app-logo" />
       </header>
       ${apiBadge}
@@ -690,8 +690,8 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared
       <p class="source-doc-note">Dodajesz zdjęcia dla tego dokumentu źródłowego, informacje o dodanych zdjęciach zostaną odzwierciedlone w dokumencie źródłowym/misji i zakończą jego procesowanie.</p>
       <p class="link-label">Unique URL:</p>
       <p><code>${escapeHtml(publicUrl)}</code></p>
-      <p><a href="/">Back to links list</a></p>
-      <p class="hint">Open this link on a phone and use the camera button below.</p>
+      <p><a href="/">wróć do menu głównego</a></p>
+      <p class="hint">ten link działa na dowolnej przeglądarce na telefonie, użyj przycisków poniżej żeby dodać zdjęcia do dokumentu</p>
 
       ${uploaded ? '<div id="uploadToast" class="toast toast-success" role="status" aria-live="polite">Zdjęcie zostało poprawnie przesłane.</div>' : ""}
       ${cleared ? '<p class="ok">All uploaded photos for this link were deleted.</p>' : ""}
