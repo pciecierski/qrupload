@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const fs = require("fs");
+const https = require("https");
 const path = require("path");
 const express = require("express");
 const multer = require("multer");
@@ -79,7 +80,8 @@ app.get("/", async (req, res) => {
       id: link.id,
       url: `${baseUrl}${relativeUrl}`,
       sourceDocumentNumber: link.sourceDocumentNumber || "",
-      hasUploads: Boolean(link.hasUploads)
+      hasUploads: Boolean(link.hasUploads),
+      isApiCreated: Boolean(link.isApiCreated)
     };
   });
   res.send(renderHomePage(createdLinks));
@@ -88,15 +90,92 @@ app.get("/", async (req, res) => {
 app.post("/links", async (req, res) => {
   const linkId = createLinkId();
   const sourceDocumentNumber = normalizeSourceDocumentNumber(req.body.sourceDocumentNumber);
-  await storage.createLink(linkId, sourceDocumentNumber);
+  await storage.createLink(linkId, sourceDocumentNumber, false);
   res.redirect(`/u/${linkId}`);
 });
 
 app.post("/api/links", async (req, res) => {
   const linkId = createLinkId();
   const sourceDocumentNumber = normalizeSourceDocumentNumber(req.body && req.body.sourceDocumentNumber);
-  await storage.createLink(linkId, sourceDocumentNumber);
+  await storage.createLink(linkId, sourceDocumentNumber, true);
   return res.status(201).json(buildApiLinkResponse(req, linkId, sourceDocumentNumber));
+});
+
+const KOLEJKA_CLOSED_URL = process.env.KOLEJKA_CLOSED_URL || "https://kolejka.dclabs.pl/api/closed";
+// When 1, skips TLS certificate verification for POST to kolejka (same effect as Postman "SSL verification" OFF).
+const KOLEJKA_TLS_INSECURE = process.env.KOLEJKA_TLS_INSECURE === "1";
+
+function postJsonToHttps(urlString, jsonObject, timeoutMs) {
+  const ms = typeof timeoutMs === "number" ? timeoutMs : 45000;
+  return new Promise((resolve, reject) => {
+    let u;
+    try {
+      u = new URL(urlString);
+    } catch (e) {
+      reject(new Error("Invalid KOLEJKA_CLOSED_URL"));
+      return;
+    }
+    const bodyBuf = Buffer.from(JSON.stringify(jsonObject), "utf8");
+    const options = {
+      hostname: u.hostname,
+      port: u.port || 443,
+      path: u.pathname + (u.search || ""),
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": bodyBuf.length,
+        "User-Agent": "QRupload/1.0",
+        Accept: "application/json, */*"
+      },
+      timeout: ms
+    };
+    if (KOLEJKA_TLS_INSECURE) {
+      options.rejectUnauthorized = false;
+    }
+    const req = https.request(options, (incoming) => {
+      const chunks = [];
+      incoming.on("data", (chunk) => chunks.push(chunk));
+      incoming.on("end", () => {
+        resolve({
+          statusCode: incoming.statusCode,
+          headers: incoming.headers,
+          body: Buffer.concat(chunks)
+        });
+      });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy(new Error("Upstream timeout after " + ms + "ms"));
+    });
+    req.write(bodyBuf);
+    req.end();
+  });
+}
+
+app.post("/api/complete-document", async (req, res) => {
+  const raw = req.body && req.body.sourceDocumentNumber;
+  const sourceDocumentNumber = typeof raw === "string" ? raw.slice(0, 120) : "";
+  try {
+    const upstream = await postJsonToHttps(KOLEJKA_CLOSED_URL, { sourceDocumentNumber }, 45000);
+    const contentType = upstream.headers["content-type"];
+    if (contentType) {
+      res.setHeader("Content-Type", contentType);
+    }
+    return res.status(upstream.statusCode || 502).send(upstream.body);
+  } catch (err) {
+    const code = err && err.code ? err.code : "";
+    console.error("complete-document upstream:", err && err.message, code);
+    let detail = err && err.message ? err.message : String(err);
+    if (code === "ERR_TLS_CERT_ALTNAME_INVALID" && !KOLEJKA_TLS_INSECURE) {
+      detail +=
+        " (Postman often works with SSL verification disabled in Settings. Set env KOLEJKA_TLS_INSECURE=1 or npm run start:kolejka-insecure for the same behavior, or fix TLS for the kolejka hostname.)";
+    }
+    return res.status(502).json({
+      error: "Upstream request failed",
+      detail,
+      code: code || undefined
+    });
+  }
 });
 
 app.post("/links/clear", async (req, res) => {
@@ -160,6 +239,9 @@ async function start() {
   await storage.init();
   app.listen(port, () => {
     console.log(`QRupload app listening on http://localhost:${port} using ${storage.kind} storage`);
+    if (KOLEJKA_TLS_INSECURE) {
+      console.warn("KOLEJKA_TLS_INSECURE=1: TLS verification disabled for POST to kolejka (use only until host certificate is fixed).");
+    }
   });
 }
 
@@ -199,13 +281,14 @@ function createFileStorage() {
         writeState({ links: [], photos: [] });
       }
     },
-    async createLink(id, sourceDocumentNumber) {
+    async createLink(id, sourceDocumentNumber, isApiCreated) {
       const state = readState();
       if (!state.links.some((link) => link.id === id)) {
         state.links.push({
           id,
           qrData: `/u/${id}`,
           sourceDocumentNumber,
+          isApiCreated: Boolean(isApiCreated),
           createdAt: new Date().toISOString()
         });
         writeState(state);
@@ -309,12 +392,17 @@ function createPostgresStorage(databaseUrl) {
           id TEXT PRIMARY KEY,
           qr_data TEXT NOT NULL,
           source_document_number TEXT NOT NULL DEFAULT '',
+          api_created BOOLEAN NOT NULL DEFAULT FALSE,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
       `);
       await pool.query(`
         ALTER TABLE links
         ADD COLUMN IF NOT EXISTS source_document_number TEXT NOT NULL DEFAULT '';
+      `);
+      await pool.query(`
+        ALTER TABLE links
+        ADD COLUMN IF NOT EXISTS api_created BOOLEAN NOT NULL DEFAULT FALSE;
       `);
       await pool.query(`
         CREATE TABLE IF NOT EXISTS photos (
@@ -327,13 +415,13 @@ function createPostgresStorage(databaseUrl) {
         );
       `);
     },
-    async createLink(id, sourceDocumentNumber) {
+    async createLink(id, sourceDocumentNumber, isApiCreated) {
       const qrData = `/u/${id}`;
       await pool.query(
-        `INSERT INTO links (id, qr_data, source_document_number)
-         VALUES ($1, $2, $3)
+        `INSERT INTO links (id, qr_data, source_document_number, api_created)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (id) DO NOTHING`,
-        [id, qrData, sourceDocumentNumber]
+        [id, qrData, sourceDocumentNumber, Boolean(isApiCreated)]
       );
     },
     async hasLink(id) {
@@ -346,6 +434,7 @@ function createPostgresStorage(databaseUrl) {
            l.id,
            l.qr_data AS "qrData",
            l.source_document_number AS "sourceDocumentNumber",
+           l.api_created AS "isApiCreated",
            l.created_at AS "createdAt",
            EXISTS (
              SELECT 1 FROM photos p WHERE p.link_id = l.id
@@ -357,7 +446,7 @@ function createPostgresStorage(databaseUrl) {
     },
     async getLinkById(id) {
       const result = await pool.query(
-        `SELECT id, qr_data AS "qrData", source_document_number AS "sourceDocumentNumber", created_at AS "createdAt"
+        `SELECT id, qr_data AS "qrData", source_document_number AS "sourceDocumentNumber", api_created AS "isApiCreated", created_at AS "createdAt"
          FROM links
          WHERE id = $1
          LIMIT 1`,
@@ -402,16 +491,17 @@ function createPostgresStorage(databaseUrl) {
 function renderHomePage(createdLinks) {
   const linkList = createdLinks.length
     ? createdLinks
-        .map(({ id, url, sourceDocumentNumber, hasUploads }) => {
+        .map(({ id, url, sourceDocumentNumber, hasUploads, isApiCreated }) => {
           const encodedUrl = encodeURIComponent(url);
           const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodedUrl}`;
           const sourceLabel = sourceDocumentNumber
             ? escapeHtml(sourceDocumentNumber)
             : "Not provided";
+          const apiBadge = isApiCreated ? '<span class="api-pill">API</span>' : "";
           const statusClass = hasUploads ? "used" : "unused";
           const statusText = hasUploads ? "Used: photo uploaded" : "Unused: no uploads yet";
           return `<li class="link-card">
-        <p class="link-card-label">Link</p>
+        <p class="link-card-label">Link ${apiBadge}</p>
         <p class="link-status">
           <span class="status-icon ${statusClass}" aria-hidden="true"></span>
           ${statusText}
@@ -550,6 +640,8 @@ function renderHomePage(createdLinks) {
 }
 
 function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared, errorMessage) {
+  const apiBadge = linkData && linkData.isApiCreated ? '<span class="api-pill">API</span>' : "";
+  const canCompleteDocument = photos.length > 0;
   const photoList = photos.length
     ? photos
         .map(
@@ -575,33 +667,48 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared
         <h1>Upload Photos</h1>
         <img src="/dclog-logo.png" alt="dclog.pl logo" class="app-logo" />
       </header>
+      ${apiBadge}
+      <p id="documentCompletionPill" class="completion-pill" style="display: none;">Obsługa dokumentu zakończona</p>
       <p class="source-doc">
         <strong>Source document:</strong> ${escapeHtml((linkData && linkData.sourceDocumentNumber) || "Not provided")}
       </p>
+      <p class="source-doc-note">Dodajesz zdjęcia dla tego dokumentu źródłowego, informacje o dodanych zdjęciach zostaną odzwierciedlone w dokumencie źródłowym/misji i zakończą jego procesowanie.</p>
       <p class="link-label">Unique URL:</p>
       <p><code>${escapeHtml(publicUrl)}</code></p>
       <p><a href="/">Back to links list</a></p>
       <p class="hint">Open this link on a phone and use the camera button below.</p>
 
-      ${uploaded ? '<p class="ok">Upload successful.</p>' : ""}
+      ${uploaded ? '<div id="uploadToast" class="toast toast-success" role="status" aria-live="polite">Zdjęcie zostało poprawnie przesłane.</div>' : ""}
       ${cleared ? '<p class="ok">All uploaded photos for this link were deleted.</p>' : ""}
       ${errorMessage ? `<p class="error">${escapeHtml(errorMessage)}</p>` : ""}
 
       <form method="post" action="/u/${encodeURIComponent(linkId)}/upload" enctype="multipart/form-data">
         <input id="photos" name="photos" type="file" accept="image/*" capture="environment" multiple required />
-        <button id="cameraButton" type="button">Make a photo</button>
-        <button id="uploadButton" class="upload-button" type="submit" disabled>Upload</button>
+        <button id="cameraButton" type="button">Wykonaj zdjęcie</button>
+        <button id="uploadButton" class="upload-button" type="submit" disabled>Prześlij zdjęcie</button>
       </form>
 
       <h2>Uploaded Photos</h2>
       <form method="post" action="/u/${encodeURIComponent(linkId)}/photos/clear" class="danger-zone">
-        <button
-          type="submit"
-          class="danger-button"
-          onclick="return window.confirm('Delete all uploaded photos for this link?')"
-        >
-          Delete photos
-        </button>
+        <div class="action-row">
+          <button
+            type="submit"
+            class="danger-button"
+            onclick="return window.confirm('Delete all uploaded photos for this link?')"
+          >
+            Usuń Zdjęcia
+          </button>
+          <button
+            id="completeDocButton"
+            type="button"
+            class="complete-doc-button"
+            ${canCompleteDocument ? "" : "disabled"}
+            data-link-id="${escapeHtml(linkId)}"
+            data-source-document-number="${escapeHtml((linkData && linkData.sourceDocumentNumber) || '')}"
+          >
+            zakończ obsługę dokumentu.
+          </button>
+        </div>
       </form>
       <ul class="photo-grid">
         ${photoList}
@@ -614,6 +721,15 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared
         <img id="dialogPhotoImage" alt="Full size uploaded photo" />
       </div>
     </dialog>
+    <dialog id="completeDocDialog" class="qr-dialog">
+      <div class="qr-dialog-content">
+        <p>Dokument zostanie zakończony  a infomracje zostaną przekazane do systemu źródłowego, czy potwierdzasz?</p>
+        <div class="dialog-actions">
+          <button id="cancelCompleteDoc" type="button">Zrezygnuj</button>
+          <button id="confirmCompleteDoc" type="button">Potwierdź</button>
+        </div>
+      </div>
+    </dialog>
     <script>
       const fileInput = document.getElementById("photos");
       const cameraButton = document.getElementById("cameraButton");
@@ -623,6 +739,12 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared
       const dialogPhotoImage = document.getElementById("dialogPhotoImage");
       const closePhotoDialog = document.getElementById("closePhotoDialog");
       const openPhotoButtons = document.querySelectorAll(".open-photo-button");
+      const uploadToast = document.getElementById("uploadToast");
+      const completeDocButton = document.getElementById("completeDocButton");
+      const completeDocDialog = document.getElementById("completeDocDialog");
+      const cancelCompleteDoc = document.getElementById("cancelCompleteDoc");
+      const confirmCompleteDoc = document.getElementById("confirmCompleteDoc");
+      const documentCompletionPill = document.getElementById("documentCompletionPill");
 
       function syncUploadState() {
         const hasSelectedPhoto = fileInput.files && fileInput.files.length > 0;
@@ -669,6 +791,130 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared
           photoDialog.close();
         }
       });
+
+      // Show toast after successful upload (rendered when query param uploaded=1 is present).
+      if (uploadToast) {
+        requestAnimationFrame(() => uploadToast.classList.add("show"));
+        setTimeout(() => uploadToast.classList.remove("show"), 4000);
+      }
+
+      if (completeDocButton) {
+        completeDocButton.addEventListener("click", () => {
+          if (completeDocDialog && typeof completeDocDialog.showModal === "function") {
+            completeDocDialog.showModal();
+          }
+        });
+      }
+
+      if (cancelCompleteDoc && completeDocDialog) {
+        cancelCompleteDoc.addEventListener("click", () => {
+          completeDocDialog.close();
+        });
+      }
+
+      function showFloatingToast(message, variant) {
+        var existing = document.getElementById("floatingToast");
+        if (!existing) {
+          existing = document.createElement("div");
+          existing.id = "floatingToast";
+          existing.setAttribute("role", "status");
+          existing.setAttribute("aria-live", "polite");
+          document.body.appendChild(existing);
+        }
+        existing.className = "toast " + (variant === "error" ? "toast-error" : "toast-warning");
+        existing.textContent = message;
+        requestAnimationFrame(function () {
+          existing.classList.add("show");
+        });
+        setTimeout(function () {
+          existing.classList.remove("show");
+        }, 5000);
+      }
+
+      if (confirmCompleteDoc && completeDocButton && documentCompletionPill && completeDocDialog) {
+        confirmCompleteDoc.addEventListener("click", function () {
+          completeDocDialog.close();
+
+          var sourceDocumentNumber = completeDocButton.dataset.sourceDocumentNumber || "";
+          completeDocButton.disabled = true;
+          confirmCompleteDoc.disabled = true;
+
+          fetch("/api/complete-document", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sourceDocumentNumber: sourceDocumentNumber })
+          })
+            .then(function (resp) {
+              if (resp.status === 200) {
+                var linkIdForCompletion = completeDocButton.dataset.linkId || "";
+                var storageKey = linkIdForCompletion ? "qrupload:docCompleted:" + linkIdForCompletion : "";
+                if (storageKey) {
+                  try {
+                    localStorage.setItem(storageKey, "1");
+                  } catch (e) {
+                    // Ignore localStorage errors (private mode, etc.).
+                  }
+                }
+                documentCompletionPill.style.display = "block";
+                var actionForm = completeDocButton.closest("form");
+                var deletePhotosButton = actionForm ? actionForm.querySelector("button.danger-button") : null;
+                if (deletePhotosButton) deletePhotosButton.style.display = "none";
+                completeDocButton.style.display = "none";
+                showFloatingToast("Obsługa dokumentu została zakończona.", "warning");
+              } else {
+                return resp.text().then(function (text) {
+                  var msg = "Nie udało się zakończyć obsługi dokumentu (HTTP " + resp.status + ").";
+                  try {
+                    var j = JSON.parse(text);
+                    if (j && j.detail) {
+                      msg = msg + " " + j.detail;
+                    } else if (j && j.error) {
+                      msg = msg + " " + j.error;
+                    }
+                    if (j && j.code) {
+                      msg = msg + " (" + j.code + ")";
+                    }
+                  } catch (e2) {
+                    if (text && text.length < 300) {
+                      msg = msg + " " + text.trim();
+                    }
+                  }
+                  showFloatingToast(msg, "error");
+                  completeDocButton.disabled = false;
+                });
+              }
+            })
+            .catch(function () {
+              showFloatingToast("Błąd połączenia. Spróbuj ponownie.", "error");
+              completeDocButton.disabled = false;
+            })
+            .finally(function () {
+              confirmCompleteDoc.disabled = false;
+            });
+        });
+      }
+
+      // Apply completed state on page load.
+      if (completeDocButton && documentCompletionPill) {
+        const linkIdForCompletion = completeDocButton.dataset.linkId || "";
+        const storageKey = linkIdForCompletion ? "qrupload:docCompleted:" + linkIdForCompletion : "";
+        if (storageKey) {
+          let isCompleted = false;
+          try {
+            isCompleted = localStorage.getItem(storageKey) === "1";
+          } catch {
+            isCompleted = false;
+          }
+          if (isCompleted) {
+            documentCompletionPill.style.display = "block";
+
+            const actionForm = completeDocButton.closest("form");
+            const deletePhotosButton = actionForm ? actionForm.querySelector("button.danger-button") : null;
+            if (deletePhotosButton) deletePhotosButton.style.display = "none";
+            completeDocButton.style.display = "none";
+          }
+        }
+      }
     </script>
   </body>
 </html>`;
