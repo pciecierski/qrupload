@@ -102,8 +102,21 @@ app.post("/api/links", async (req, res) => {
 });
 
 const KOLEJKA_CLOSED_URL = process.env.KOLEJKA_CLOSED_URL || "https://kolejka.dclabs.pl/api/closed";
-// When 1, skips TLS certificate verification for POST to kolejka (same effect as Postman "SSL verification" OFF).
-const KOLEJKA_TLS_INSECURE = process.env.KOLEJKA_TLS_INSECURE === "1";
+// Skip TLS verify for POST to kolejka when: KOLEJKA_TLS_INSECURE=1, or Railway deploy (wildcard cert mismatch on custom domain).
+// Force strict verify: KOLEJKA_TLS_INSECURE=0
+const KOLEJKA_SKIP_TLS_VERIFY = (function () {
+  if (process.env.KOLEJKA_TLS_INSECURE === "0" || process.env.KOLEJKA_TLS_INSECURE === "false") {
+    return false;
+  }
+  if (process.env.KOLEJKA_TLS_INSECURE === "1" || process.env.KOLEJKA_TLS_INSECURE === "true") {
+    return true;
+  }
+  return Boolean(
+    process.env.RAILWAY_ENVIRONMENT ||
+      process.env.RAILWAY_SERVICE_NAME ||
+      process.env.RAILWAY_PROJECT_ID
+  );
+})();
 
 function postJsonToHttps(urlString, jsonObject, timeoutMs) {
   const ms = typeof timeoutMs === "number" ? timeoutMs : 45000;
@@ -129,7 +142,7 @@ function postJsonToHttps(urlString, jsonObject, timeoutMs) {
       },
       timeout: ms
     };
-    if (KOLEJKA_TLS_INSECURE) {
+    if (KOLEJKA_SKIP_TLS_VERIFY) {
       options.rejectUnauthorized = false;
     }
     const req = https.request(options, (incoming) => {
@@ -166,9 +179,9 @@ app.post("/api/complete-document", async (req, res) => {
     const code = err && err.code ? err.code : "";
     console.error("complete-document upstream:", err && err.message, code);
     let detail = err && err.message ? err.message : String(err);
-    if (code === "ERR_TLS_CERT_ALTNAME_INVALID" && !KOLEJKA_TLS_INSECURE) {
+    if (code === "ERR_TLS_CERT_ALTNAME_INVALID" && !KOLEJKA_SKIP_TLS_VERIFY) {
       detail +=
-        " (Postman often works with SSL verification disabled in Settings. Set env KOLEJKA_TLS_INSECURE=1 or npm run start:kolejka-insecure for the same behavior, or fix TLS for the kolejka hostname.)";
+        " Set KOLEJKA_TLS_INSECURE=1, deploy on Railway (auto), or npm run start:kolejka-insecure locally. Or fix TLS for kolejka.dclabs.pl.";
     }
     return res.status(502).json({
       error: "Upstream request failed",
@@ -239,8 +252,10 @@ async function start() {
   await storage.init();
   app.listen(port, () => {
     console.log(`QRupload app listening on http://localhost:${port} using ${storage.kind} storage`);
-    if (KOLEJKA_TLS_INSECURE) {
-      console.warn("KOLEJKA_TLS_INSECURE=1: TLS verification disabled for POST to kolejka (use only until host certificate is fixed).");
+    if (KOLEJKA_SKIP_TLS_VERIFY) {
+      console.warn(
+        "Kolejka upstream: TLS certificate verification is disabled for POST to kolejka. After kolejka.dclabs.pl has a valid cert, set KOLEJKA_TLS_INSECURE=0."
+      );
     }
   });
 }
