@@ -101,6 +101,14 @@ app.post("/api/links", async (req, res) => {
   return res.status(201).json(buildApiLinkResponse(req, linkId, sourceDocumentNumber));
 });
 
+app.get("/apidocs", (req, res) => {
+  res.send(renderApiDocsPage(req));
+});
+
+app.get("/apidocs.json", (req, res) => {
+  res.json(buildApiLinksSpec(req));
+});
+
 const KOLEJKA_CLOSED_URL = process.env.KOLEJKA_CLOSED_URL || "https://kolejka.dclabs.pl/api/closed";
 // Skip TLS verify for POST to kolejka when: KOLEJKA_TLS_INSECURE=1, or Railway deploy (wildcard cert mismatch on custom domain).
 // Force strict verify: KOLEJKA_TLS_INSECURE=0
@@ -986,6 +994,110 @@ function buildApiLinkResponse(req, linkId, sourceDocumentNumber) {
     qrCodeUrl,
     sourceDocumentNumber
   };
+}
+
+function buildApiLinksSpec(req) {
+  const baseUrl = getPublicBaseUrl(req);
+  return {
+    openapi: "3.0.3",
+    info: {
+      title: "QRupload API",
+      version: "1.0.0",
+      description: "API endpoint for creating upload links with QR codes."
+    },
+    servers: [{ url: baseUrl }],
+    paths: {
+      "/api/links": {
+        post: {
+          summary: "Create a new upload link",
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    sourceDocumentNumber: {
+                      type: "string",
+                      maxLength: 120,
+                      description: "Optional source document number."
+                    }
+                  }
+                },
+                example: {
+                  sourceDocumentNumber: "DOC-2026-0001"
+                }
+              }
+            }
+          },
+          responses: {
+            201: {
+              description: "Link created successfully",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      id: { type: "string" },
+                      uploadUrl: { type: "string", format: "uri" },
+                      qrCodeUrl: { type: "string", format: "uri" },
+                      sourceDocumentNumber: { type: "string" }
+                    },
+                    required: ["id", "uploadUrl", "qrCodeUrl", "sourceDocumentNumber"]
+                  },
+                  example: {
+                    id: "a1b2c3d4e5",
+                    uploadUrl: `${baseUrl}/u/a1b2c3d4e5`,
+                    qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=420x420&data=${encodeURIComponent(`${baseUrl}/u/a1b2c3d4e5`)}`,
+                    sourceDocumentNumber: "DOC-2026-0001"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  };
+}
+
+function renderApiDocsPage(req) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QRupload API Docs</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="title-row">
+        <h1>QRupload API docs</h1>
+        <img src="/dclog-logo.png" alt="dclog.pl logo" class="app-logo" />
+      </header>
+      <p>Specyfikacja endpointu <code>POST /api/links</code>.</p>
+      <p>
+        <a href="/apidocs.json" target="_blank" rel="noopener noreferrer">Open raw JSON spec</a>
+      </p>
+      <div id="swagger-ui"></div>
+    </main>
+    <footer class="app-footer">Product preview, Designed by dclog.pl</footer>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+      window.addEventListener("load", function () {
+        if (!window.SwaggerUIBundle) return;
+        window.SwaggerUIBundle({
+          url: "/apidocs.json",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          displayRequestDuration: true
+        });
+      });
+    </script>
+  </body>
+</html>`;
 }
 
 function normalizeDatabaseUrl(rawUrl) {
