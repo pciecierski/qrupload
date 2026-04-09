@@ -109,7 +109,7 @@ app.get("/apidocs.json", (req, res) => {
   res.json(buildApiLinksSpec(req));
 });
 
-const KOLEJKA_CLOSED_URL = process.env.KOLEJKA_CLOSED_URL || "https://kolejka.dclabs.pl/api/closed";
+const KOLEJKA_CLOSED_URL = process.env.KOLEJKA_CLOSED_URL || "https://missioncontrol.dclabs.pl/api/closed";
 // Skip TLS verify for POST to kolejka when: KOLEJKA_TLS_INSECURE=1, or Railway deploy (wildcard cert mismatch on custom domain).
 // Force strict verify: KOLEJKA_TLS_INSECURE=0
 const KOLEJKA_SKIP_TLS_VERIFY = (function () {
@@ -176,8 +176,9 @@ function postJsonToHttps(urlString, jsonObject, timeoutMs) {
 app.post("/api/complete-document", async (req, res) => {
   const raw = req.body && req.body.sourceDocumentNumber;
   const sourceDocumentNumber = typeof raw === "string" ? raw.slice(0, 120) : "";
+  const upstreamPayload = { sourceDocumentNumber };
   try {
-    const upstream = await postJsonToHttps(KOLEJKA_CLOSED_URL, { sourceDocumentNumber }, 45000);
+    const upstream = await postJsonToHttps(KOLEJKA_CLOSED_URL, upstreamPayload, 45000);
     const contentType = upstream.headers["content-type"];
     if (contentType) {
       res.setHeader("Content-Type", contentType);
@@ -189,7 +190,7 @@ app.post("/api/complete-document", async (req, res) => {
     let detail = err && err.message ? err.message : String(err);
     if (code === "ERR_TLS_CERT_ALTNAME_INVALID" && !KOLEJKA_SKIP_TLS_VERIFY) {
       detail +=
-        " Set KOLEJKA_TLS_INSECURE=1, deploy on Railway (auto), or npm run start:kolejka-insecure locally. Or fix TLS for kolejka.dclabs.pl.";
+        " Set KOLEJKA_TLS_INSECURE=1, deploy on Railway (auto), or npm run start:kolejka-insecure locally. Or fix TLS for missioncontrol.dclabs.pl.";
     }
     return res.status(502).json({
       error: "Upstream request failed",
@@ -262,7 +263,7 @@ async function start() {
     console.log(`QRupload app listening on http://localhost:${port} using ${storage.kind} storage`);
     if (KOLEJKA_SKIP_TLS_VERIFY) {
       console.warn(
-        "Kolejka upstream: TLS certificate verification is disabled for POST to kolejka. After kolejka.dclabs.pl has a valid cert, set KOLEJKA_TLS_INSECURE=0."
+        "Kolejka upstream: TLS certificate verification is disabled for POST to kolejka. After missioncontrol.dclabs.pl has a valid cert, set KOLEJKA_TLS_INSECURE=0."
       );
     }
   });
