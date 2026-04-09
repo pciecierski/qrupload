@@ -579,7 +579,10 @@ function renderHomePage(createdLinks) {
         </button>
       </form>
     </main>
-    <footer class="app-footer">Product preview, Designed by dclog.pl</footer>
+    <footer class="app-footer">
+      <div>Product preview, Designed by dclog.pl</div>
+      <p><a href="/apidocs">Open API docs</a></p>
+    </footer>
     <dialog id="qrDialog" class="qr-dialog">
       <div class="qr-dialog-content">
         <button id="closeQrDialog" class="close-dialog" type="button" aria-label="Close QR code dialog">Close</button>
