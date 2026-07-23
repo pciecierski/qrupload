@@ -1,9 +1,11 @@
 const crypto = require("crypto");
 const fs = require("fs");
+const fsp = require("fs/promises");
 const https = require("https");
 const path = require("path");
 const express = require("express");
 const multer = require("multer");
+const sharp = require("sharp");
 const { Pool } = require("pg");
 
 const uploadsRoot = path.join(__dirname, "uploads");
@@ -16,10 +18,20 @@ const app = express();
 const port = process.env.PORT || 3000;
 const storage = createStorage();
 
-app.use("/uploads", express.static(uploadsRoot));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+// Cap concurrent upload requests so one busy moment cannot spike RAM.
+const MAX_CONCURRENT_UPLOADS = Number(process.env.MAX_CONCURRENT_UPLOADS || 2);
+let activeUploads = 0;
+
+// Keep phone photos usable but much smaller in RAM/DB than full camera originals.
+const IMAGE_MAX_EDGE = Number(process.env.IMAGE_MAX_EDGE || 1600);
+const IMAGE_JPEG_QUALITY = Number(process.env.IMAGE_JPEG_QUALITY || 78);
+const THUMB_MAX_EDGE = Number(process.env.THUMB_MAX_EDGE || 360);
+const THUMB_JPEG_QUALITY = Number(process.env.THUMB_JPEG_QUALITY || 68);
+
+app.use("/uploads", express.static(uploadsRoot, { maxAge: "1y", immutable: true }));
+app.use(express.urlencoded({ extended: true, limit: "32kb" }));
+app.use(express.json({ limit: "32kb" }));
+app.use(express.static(path.join(__dirname, "public"), { maxAge: "1d" }));
 
 function createLinkId() {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 10);
@@ -33,21 +45,21 @@ async function ensureLinkExists(req, res, next) {
   return next();
 }
 
-function uploadForLink(usesPostgres) {
-  const configuredStorage = usesPostgres ? multer.memoryStorage() : multer.diskStorage({
-    destination(req, file, cb) {
-      const linkFolder = path.join(uploadsRoot, req.params.linkId);
-      fs.mkdirSync(linkFolder, { recursive: true });
-      cb(null, linkFolder);
-    },
-    filename(req, file, cb) {
-      const safeExt = path.extname(file.originalname || "").toLowerCase() || ".jpg";
-      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${safeExt}`);
-    }
-  });
-
+function uploadForLink() {
+  // Always write to disk first. memoryStorage() kept every upload in the Node heap
+  // (up to 10 x 10MB) and was the main Railway RAM spike.
   return multer({
-    storage: configuredStorage,
+    storage: multer.diskStorage({
+      destination(req, file, cb) {
+        const linkFolder = path.join(uploadsRoot, req.params.linkId);
+        fs.mkdirSync(linkFolder, { recursive: true });
+        cb(null, linkFolder);
+      },
+      filename(req, file, cb) {
+        const safeExt = path.extname(file.originalname || "").toLowerCase() || ".jpg";
+        cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${safeExt}`);
+      }
+    }),
     limits: { fileSize: 10 * 1024 * 1024, files: 10 },
     fileFilter(req, file, cb) {
       if (!file.mimetype.startsWith("image/")) {
@@ -58,8 +70,8 @@ function uploadForLink(usesPostgres) {
   }).array("photos", 10);
 }
 
-function uploadViaMulter(req, res, usesPostgres) {
-  const uploader = uploadForLink(usesPostgres);
+function uploadViaMulter(req, res) {
+  const uploader = uploadForLink();
   return new Promise((resolve, reject) => {
     uploader(req, res, (err) => {
       if (err) {
@@ -69,6 +81,65 @@ function uploadViaMulter(req, res, usesPostgres) {
       resolve();
     });
   });
+}
+
+async function unlinkQuietly(filePath) {
+  if (!filePath) return;
+  try {
+    await fsp.unlink(filePath);
+  } catch {
+    // Ignore missing/temp cleanup failures.
+  }
+}
+
+/**
+ * Compress one image at a time into a smaller JPEG + thumbnail.
+ * sequentialRead + single-file processing keeps sharp's peak RSS lower.
+ */
+async function optimizeImage(inputPath) {
+  try {
+    const pipeline = sharp(inputPath, {
+      failOn: "none",
+      sequentialRead: true,
+      limitInputPixels: 40_000_000
+    }).rotate();
+
+    // Sequential (not Promise.all) so decode/resize peaks stay closer to one frame.
+    const data = await pipeline
+      .clone()
+      .resize({
+        width: IMAGE_MAX_EDGE,
+        height: IMAGE_MAX_EDGE,
+        fit: "inside",
+        withoutEnlargement: true
+      })
+      .jpeg({ quality: IMAGE_JPEG_QUALITY, mozjpeg: true })
+      .toBuffer();
+
+    const thumb = await pipeline
+      .clone()
+      .resize({
+        width: THUMB_MAX_EDGE,
+        height: THUMB_MAX_EDGE,
+        fit: "inside",
+        withoutEnlargement: true
+      })
+      .jpeg({ quality: THUMB_JPEG_QUALITY, mozjpeg: true })
+      .toBuffer();
+
+    return { data, thumb, contentType: "image/jpeg" };
+  } catch (error) {
+    console.warn("Image optimize failed, storing original bytes:", error && error.message);
+    const data = await fsp.readFile(inputPath);
+    return { data, thumb: null, contentType: "image/jpeg" };
+  }
+}
+
+function sendBinary(res, contentType, data) {
+  res.setHeader("Content-Type", contentType || "image/jpeg");
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.setHeader("Content-Length", data.length);
+  return res.end(data);
 }
 
 app.get("/", async (req, res) => {
@@ -216,15 +287,36 @@ app.get("/u/:linkId", ensureLinkExists, async (req, res) => {
 });
 
 app.post("/u/:linkId/upload", ensureLinkExists, async (req, res) => {
+  if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+    res.setHeader("Retry-After", "3");
+    return res
+      .status(503)
+      .send(renderUploadPage(
+        `${getPublicBaseUrl(req)}/u/${req.params.linkId}`,
+        req.params.linkId,
+        await storage.getLinkById(req.params.linkId),
+        await storage.getPhotos(req.params.linkId),
+        false,
+        false,
+        "Serwer jest zajęty przesyłaniem innych zdjęć. Spróbuj ponownie za chwilę."
+      ));
+  }
+
+  activeUploads += 1;
+  const uploadedFiles = [];
   try {
-    await uploadViaMulter(req, res, storage.kind === "postgres");
-    await storage.addPhotos(req.params.linkId, req.files || []);
+    await uploadViaMulter(req, res);
+    uploadedFiles.push(...(req.files || []));
+    await storage.addPhotos(req.params.linkId, uploadedFiles);
     return res.redirect(`/u/${req.params.linkId}?uploaded=1`);
   } catch (err) {
+    await Promise.all(uploadedFiles.map((file) => unlinkQuietly(file && file.path)));
     const photos = await storage.getPhotos(req.params.linkId);
     const linkData = await storage.getLinkById(req.params.linkId);
     const publicUrl = `${getPublicBaseUrl(req)}/u/${req.params.linkId}`;
     return res.status(400).send(renderUploadPage(publicUrl, req.params.linkId, linkData, photos, false, false, err.message));
+  } finally {
+    activeUploads = Math.max(0, activeUploads - 1);
   }
 });
 
@@ -234,18 +326,18 @@ app.post("/u/:linkId/photos/clear", ensureLinkExists, async (req, res) => {
 });
 
 app.get("/photo/:photoId", async (req, res) => {
-  const photo = await storage.getPhotoById(req.params.photoId);
+  const variant = req.query.v === "thumb" ? "thumb" : "full";
+  const photo = await storage.getPhotoById(req.params.photoId, variant);
   if (!photo) {
     return res.status(404).send(renderNotFoundPage());
   }
 
   if (photo.data) {
-    res.setHeader("Content-Type", photo.contentType);
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-    return res.send(photo.data);
+    return sendBinary(res, photo.contentType, photo.data);
   }
 
   if (photo.filePath) {
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     return res.sendFile(photo.filePath);
   }
 
@@ -338,15 +430,33 @@ function createFileStorage() {
     async addPhotos(linkId, files) {
       if (!files.length) return;
       const state = readState();
-      const rows = files.map((file) => ({
-        id: crypto.randomUUID(),
-        linkId,
-        filename: file.filename,
-        contentType: file.mimetype || "image/jpeg",
-        filePath: file.path,
-        createdAt: new Date().toISOString()
-      }));
-      state.photos.push(...rows);
+      for (const file of files) {
+        if (!file || !file.path) continue;
+        const optimized = await optimizeImage(file.path);
+        const baseName = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+        const finalPath = path.join(path.dirname(file.path), `${baseName}.jpg`);
+        await fsp.writeFile(finalPath, optimized.data);
+        let thumbPath = null;
+        if (optimized.thumb) {
+          thumbPath = path.join(path.dirname(file.path), `${baseName}.thumb.jpg`);
+          await fsp.writeFile(thumbPath, optimized.thumb);
+        }
+        if (file.path !== finalPath) {
+          await unlinkQuietly(file.path);
+        }
+        state.photos.push({
+          id: crypto.randomUUID(),
+          linkId,
+          filename: `${baseName}.jpg`,
+          contentType: optimized.contentType,
+          filePath: finalPath,
+          thumbPath,
+          createdAt: new Date().toISOString()
+        });
+        // Drop large buffers ASAP.
+        optimized.data = null;
+        optimized.thumb = null;
+      }
       writeState(state);
     },
     async getPhotos(linkId) {
@@ -356,10 +466,19 @@ function createFileStorage() {
         .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
         .map((photo) => `/photo/${encodeURIComponent(photo.id)}`);
     },
-    async getPhotoById(photoId) {
+    async getPhotoById(photoId, variant = "full") {
       const state = readState();
       const photo = state.photos.find((entry) => entry.id === photoId);
-      if (!photo || !photo.filePath || !fs.existsSync(photo.filePath)) {
+      if (!photo) return null;
+
+      if (variant === "thumb" && photo.thumbPath && fs.existsSync(photo.thumbPath)) {
+        return {
+          contentType: "image/jpeg",
+          filePath: photo.thumbPath
+        };
+      }
+
+      if (!photo.filePath || !fs.existsSync(photo.filePath)) {
         return null;
       }
       return {
@@ -370,13 +489,8 @@ function createFileStorage() {
     async clearAll() {
       const state = readState();
       for (const photo of state.photos) {
-        if (photo.filePath && fs.existsSync(photo.filePath)) {
-          try {
-            fs.unlinkSync(photo.filePath);
-          } catch {
-            // Ignore file deletion errors and continue cleanup.
-          }
-        }
+        await unlinkQuietly(photo.filePath);
+        await unlinkQuietly(photo.thumbPath);
       }
       writeState({ links: [], photos: [] });
     },
@@ -388,13 +502,8 @@ function createFileStorage() {
           keptPhotos.push(photo);
           continue;
         }
-        if (photo.filePath && fs.existsSync(photo.filePath)) {
-          try {
-            fs.unlinkSync(photo.filePath);
-          } catch {
-            // Ignore file deletion errors and continue cleanup.
-          }
-        }
+        await unlinkQuietly(photo.filePath);
+        await unlinkQuietly(photo.thumbPath);
       }
       state.photos = keptPhotos;
       writeState(state);
@@ -405,7 +514,12 @@ function createFileStorage() {
 function createPostgresStorage(databaseUrl) {
   const pool = new Pool({
     connectionString: databaseUrl,
-    ssl: databaseUrl.includes("railway.app") ? { rejectUnauthorized: false } : undefined
+    ssl: databaseUrl.includes("railway.app") ? { rejectUnauthorized: false } : undefined,
+    // Small Railway plans: fewer idle connections = less RSS.
+    max: Number(process.env.PG_POOL_MAX || 3),
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 15_000,
+    allowExitOnIdle: true
   });
 
   return {
@@ -437,6 +551,10 @@ function createPostgresStorage(databaseUrl) {
           data BYTEA NOT NULL,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+      `);
+      await pool.query(`
+        ALTER TABLE photos
+        ADD COLUMN IF NOT EXISTS thumb BYTEA;
       `);
     },
     async createLink(id, sourceDocumentNumber, isApiCreated) {
@@ -480,11 +598,30 @@ function createPostgresStorage(databaseUrl) {
     },
     async addPhotos(linkId, files) {
       if (!files.length) return;
+      // Process one file at a time so sharp + BYTEA insert do not multiply in heap.
       for (const file of files) {
-        await pool.query(
-          `INSERT INTO photos (link_id, filename, content_type, data) VALUES ($1, $2, $3, $4)`,
-          [linkId, file.originalname || "photo.jpg", file.mimetype || "image/jpeg", file.buffer]
-        );
+        if (!file || !file.path) continue;
+        let optimized;
+        try {
+          optimized = await optimizeImage(file.path);
+          await pool.query(
+            `INSERT INTO photos (link_id, filename, content_type, data, thumb)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+              linkId,
+              file.originalname || "photo.jpg",
+              optimized.contentType,
+              optimized.data,
+              optimized.thumb
+            ]
+          );
+        } finally {
+          await unlinkQuietly(file.path);
+          if (optimized) {
+            optimized.data = null;
+            optimized.thumb = null;
+          }
+        }
       }
     },
     async getPhotos(linkId) {
@@ -494,7 +631,23 @@ function createPostgresStorage(databaseUrl) {
       );
       return result.rows.map((row) => `/photo/${row.id}`);
     },
-    async getPhotoById(photoId) {
+    async getPhotoById(photoId, variant = "full") {
+      if (variant === "thumb") {
+        const thumbResult = await pool.query(
+          `SELECT content_type AS "contentType",
+                  COALESCE(thumb, data) AS data
+           FROM photos
+           WHERE id = $1
+           LIMIT 1`,
+          [photoId]
+        );
+        if (!thumbResult.rowCount) return null;
+        return {
+          contentType: "image/jpeg",
+          data: thumbResult.rows[0].data
+        };
+      }
+
       const result = await pool.query(
         `SELECT content_type AS "contentType", data FROM photos WHERE id = $1 LIMIT 1`,
         [photoId]
@@ -673,7 +826,7 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared
     ? photos
         .map(
           (photoUrl) => `<li class="photo-item">
-        <img src="${photoUrl}" alt="Uploaded photo" loading="lazy" />
+        <img src="${photoUrl}?v=thumb" alt="Uploaded photo" loading="lazy" decoding="async" width="360" height="360" />
         <button class="open-photo-button" type="button" data-photo-url="${photoUrl}">Open full size</button>
       </li>`
         )
@@ -793,11 +946,61 @@ function renderUploadPage(publicUrl, linkId, linkData, photos, uploaded, cleared
 
       const uploadForm = fileInput.closest("form");
       if (uploadForm) {
-        uploadForm.addEventListener("submit", () => {
-          // Prevent duplicate taps while upload is in progress.
+        uploadForm.addEventListener("submit", async (event) => {
+          // Client-side resize shrinks payload before it hits Railway RAM.
+          if (uploadForm.dataset.compressing === "1") return;
+          const selected = fileInput.files ? Array.from(fileInput.files) : [];
+          if (!selected.length || typeof createImageBitmap !== "function" || typeof DataTransfer === "undefined") {
+            cameraButton.disabled = true;
+            uploadButton.disabled = true;
+            return;
+          }
+
+          event.preventDefault();
+          uploadForm.dataset.compressing = "1";
           cameraButton.disabled = true;
           uploadButton.disabled = true;
+          uploadButton.textContent = "Przygotowywanie…";
+
+          try {
+            const transfer = new DataTransfer();
+            for (const file of selected) {
+              transfer.items.add(await compressImageForUpload(file));
+            }
+            fileInput.files = transfer.files;
+            uploadForm.submit();
+          } catch (err) {
+            console.warn("Client compress failed, uploading originals:", err);
+            uploadForm.dataset.compressing = "0";
+            uploadForm.submit();
+          }
         });
+      }
+
+      async function compressImageForUpload(file) {
+        if (!file || !file.type || file.type.indexOf("image/") !== 0) return file;
+        const maxEdge = 1600;
+        const bitmap = await createImageBitmap(file);
+        try {
+          const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+          const width = Math.max(1, Math.round(bitmap.width * scale));
+          const height = Math.max(1, Math.round(bitmap.height * scale));
+          if (scale >= 0.98 && file.size < 900 * 1024) {
+            return file;
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d", { alpha: false });
+          if (!ctx) return file;
+          ctx.drawImage(bitmap, 0, 0, width, height);
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.8));
+          if (!blob || blob.size >= file.size) return file;
+          const name = (file.name || "photo.jpg").replace(/\.[^.]+$/, "") + ".jpg";
+          return new File([blob], name, { type: "image/jpeg", lastModified: Date.now() });
+        } finally {
+          if (bitmap && typeof bitmap.close === "function") bitmap.close();
+        }
       }
 
       openPhotoButtons.forEach((button) => {

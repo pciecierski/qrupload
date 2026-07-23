@@ -42,12 +42,20 @@ This app now stores:
 Set `DATABASE_URL` to a PostgreSQL connection string (Railway Postgres plugin).  
 In this mode, links and photos are stored in Postgres (photos in `BYTEA`) and survive app restarts/redeploys.
 
+Memory-conscious upload path (important on small Railway plans):
+
+- Multipart uploads land on disk first (not in Node heap via `memoryStorage`)
+- Each photo is resized/compressed with `sharp` before insert (max edge ~1600px JPEG)
+- A small thumbnail is stored and used by the gallery (`/photo/:id?v=thumb`)
+- Concurrent uploads are limited (`MAX_CONCURRENT_UPLOADS`, default `2`)
+- Postgres pool size is capped (`PG_POOL_MAX`, default `3`)
+
 ### Local development
 
 If `DATABASE_URL` is not set, the app uses local storage:
 
 - `data.json` for links + photo metadata
-- `uploads/` for image files
+- `uploads/` for image files (+ `.thumb.jpg` companions)
 
 ## REST API
 
