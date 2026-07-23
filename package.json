@@ -14,6 +14,7 @@
   "dependencies": {
     "express": "latest",
     "multer": "latest",
-    "pg": "^8.20.0"
+    "pg": "^8.20.0",
+    "sharp": "^0.34.5"
   }
 }
